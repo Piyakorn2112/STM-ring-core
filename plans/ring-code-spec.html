@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>STM Ring-Code — Implementation Spec</title>
+<style>
+  :root{
+    --blue:#5057FF; --blue2:#3B86FF; --orange:#FB5607;
+    --ink:#16161a; --muted:#6b6b76; --line:#e6e6ea; --bg:#fbfbfd; --card:#fff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;font-size:15.5px}
+  a{color:var(--blue);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{display:grid;grid-template-columns:248px 1fr;max-width:1240px;margin:0 auto;gap:0}
+  /* sidebar */
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;padding:28px 18px 40px;border-right:1px solid var(--line);background:#fff}
+  nav .brand{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+  nav .dot{width:26px;height:26px;border-radius:50%;border:3px solid var(--blue);border-right-color:var(--orange);border-bottom-color:var(--blue2);transform:rotate(20deg)}
+  nav .brand b{font-size:14px;letter-spacing:.02em}
+  nav a{display:block;color:var(--muted);font-size:13px;padding:5px 8px;border-radius:7px;font-weight:500}
+  nav a:hover{background:#f3f3f7;text-decoration:none;color:var(--ink)}
+  nav .sec{font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:#a6a6b0;margin:16px 8px 4px;font-weight:700}
+  /* content */
+  main{padding:44px 52px 120px;min-width:0}
+  header.doc{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:8px}
+  header.doc h1{font-size:30px;margin:0 0 6px;letter-spacing:-.02em}
+  header.doc p.sub{margin:0;color:var(--muted);font-size:16px}
+  .badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+  .badge{font-size:12px;font-weight:600;padding:5px 11px;border-radius:999px;background:#eef0ff;color:var(--blue);border:1px solid #dfe2ff}
+  .badge.o{background:#fff1e9;color:#c5430a;border-color:#ffd9c4}
+  .badge.g{background:#eafaef;color:#138a45;border-color:#cdeed8}
+  section{padding-top:34px;margin-top:6px}
+  h2{font-size:21px;margin:0 0 4px;letter-spacing:-.01em;scroll-margin-top:18px}
+  h2 .n{color:var(--blue);font-variant-numeric:tabular-nums;margin-right:10px}
+  h3{font-size:15.5px;margin:22px 0 6px;letter-spacing:-.005em}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  code{font-family:var(--mono);font-size:.9em;background:#f1f1f6;padding:1.5px 5px;border-radius:5px}
+  pre{font-family:var(--mono);font-size:12.5px;line-height:1.55;background:#0f1020;color:#e7e7f5;padding:16px 18px;border-radius:12px;overflow:auto;margin:14px 0}
+  pre .c{color:#8a8ab0}
+  pre .k{color:#7aa2ff}
+  pre .s{color:#ffb37a}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:700}
+  td code{white-space:nowrap}
+  .callout{border-left:3px solid var(--blue);background:#f4f5ff;padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+  .callout.o{border-color:var(--orange);background:#fff6f1}
+  .callout.g{border-color:#16a34a;background:#f0faf3}
+  .callout b{color:var(--ink)}
+  .pill{display:inline-block;font-family:var(--mono);font-size:11.5px;background:#eef0ff;color:var(--blue);padding:2px 7px;border-radius:6px;margin:0 2px}
+  figure{margin:18px 0;text-align:center}
+  figcaption{font-size:12.5px;color:var(--muted);margin-top:8px}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:14px 0}
+  .step{flex:1 1 150px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px;position:relative}
+  .step .s{font-family:var(--mono);font-size:11px;color:var(--blue);font-weight:700}
+  .step h4{margin:4px 0 2px;font-size:13.5px}
+  .step p{margin:0;font-size:12.5px;color:var(--muted)}
+  .arrow{align-self:center;color:#c9c9d2;font-size:20px}
+  hr{border:0;border-top:1px solid var(--line);margin:30px 0}
+  .muted{color:var(--muted)}
+  .kv{display:grid;grid-template-columns:140px 1fr;gap:4px 14px;font-size:14px;margin:10px 0}
+  .kv div:nth-child(odd){color:var(--muted);font-weight:600}
+  @media(max-width:880px){.wrap{grid-template-columns:1fr}nav{display:none}main{padding:30px 22px 90px}.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="brand"><span class="dot"></span><b>STM Ring-Code</b></div>
+  <div class="sec">Spec</div>
+  <a href="#summary">Summary &amp; constraints</a>
+  <a href="#concept">1 · Concept &amp; visual language</a>
+  <a href="#arch">2 · System architecture</a>
+  <a href="#visual">3 · Code-ring visual spec</a>
+  <a href="#frame">4 · Data &amp; frame format</a>
+  <a href="#encode">5 · Encode pipeline</a>
+  <a href="#decode">6 · Decode pipeline</a>
+  <a href="#verify">7 · Verification &amp; UX</a>
+  <a href="#backend">8 · Backend &amp; sync</a>
+  <div class="sec">Delivery</div>
+  <a href="#phases">9 · Phases &amp; milestones</a>
+  <a href="#repo">10 · Repo / module plan</a>
+  <a href="#risks">11 · Risks &amp; open questions</a>
+</nav>
+
+<main>
+<header class="doc" id="summary">
+  <h1>STM Ring-Code — Implementation Spec</h1>
+  <p class="sub">A scannable, on-brand visual code: the STM ring drawn as curved dashes that <b>bloom into the living ring</b> when scanned.</p>
+  <div class="badges">
+    <span class="badge">Status: design / pre-build</span>
+    <span class="badge g">Whole ring in view</span>
+    <span class="badge g">Rotation-safe</span>
+    <span class="badge o">Not mirror-safe (by choice)</span>
+    <span class="badge">Close-up · screen → camera</span>
+    <span class="badge">Payload = id pointer</span>
+  </div>
+</header>
+
+<div class="callout">
+  <b>One-paragraph thesis.</b> The ring is a one-way visualization of an id, so the geometry can't be "decoded" — instead we add an explicit, decodable channel by <b>breaking the stroke into curved dashes</b> along the main arc (the look in your sketch: an incomplete flower / dust of the ring). Those dashes carry a tiny payload — a serial / command id — which the backend resolves. On a good scan we <b>render the real living ring for that id and morph the dashes into it</b>, registered onto what the camera sees. That bloom is both the verification and the brand moment.
+</div>
+
+<h3>Locked constraints (your decisions)</h3>
+<table>
+  <tr><th>Decision</th><th>Value</th><th>What it buys us</th></tr>
+  <tr><td>Field of view</td><td><b>Always whole ring</b></td><td>Single-frame decode — no multi-segment reassembly, no indexing overhead.</td></tr>
+  <tr><td>Rotation</td><td><b>Must be rotation-safe</b></td><td>Needs one absolute fiducial; everything else read in winding order from it.</td></tr>
+  <tr><td>Mirror / flip</td><td><b>Not required</b></td><td>Winding direction is fixed — no chirality detection, simpler fiducial, +1 effective bit.</td></tr>
+  <tr><td>Distance</td><td><b>Close-up</b></td><td>High pixel density per dash → more symbols, subtler styling tolerated.</td></tr>
+  <tr><td>Channel</td><td><b>Screen → camera</b></td><td>Clean, well-lit, controlled capture → CV is far easier than print-in-the-wild.</td></tr>
+</table>
+
+<!-- ============================================================= -->
+<section id="concept">
+<h2><span class="n">1</span>Concept &amp; visual language</h2>
+<p>The code-ring is the <b>same centre-line</b> as the brand ring (so it reads as "the STM ring"), but its stroke is rendered as <b>discrete dashes that curve along the arc</b> — like the sub-strands fragmented into beads of light. At rest it is the "dust of the ring"; on a successful scan it <b>reconstructs</b> into the full, continuous, glowing wire.</p>
+
+<figure>
+<svg width="520" height="300" viewBox="0 0 520 300" role="img" aria-label="Code ring blooming into full ring">
+  <!-- left: dashed code ring -->
+  <g transform="translate(130,150)" fill="none" stroke-linecap="round">
+    <path d="M0,-95 A95,95 0 0,1 82,-47" stroke="#5057FF" stroke-width="9" stroke-dasharray="20 16"/>
+    <path d="M82,47 A95,95 0 0,1 0,95" stroke="#5057FF" stroke-width="9" stroke-dasharray="14 18"/>
+    <path d="M0,95 A95,95 0 0,1 -82,47" stroke="#5057FF" stroke-width="9" stroke-dasharray="22 14"/>
+    <path d="M-82,-47 A95,95 0 0,1 0,-95" stroke="#5057FF" stroke-width="9" stroke-dasharray="12 20"/>
+    <path d="M0,-62 A62,62 0 0,1 54,31" stroke="#3B86FF" stroke-width="6" stroke-dasharray="10 14" opacity=".85"/>
+    <path d="M-54,31 A62,62 0 0,1 0,-62" stroke="#3B86FF" stroke-width="6" stroke-dasharray="16 12" opacity=".85"/>
+    <!-- fiducial: bright orange comet sector -->
+    <path d="M82,-47 A95,95 0 0,1 82,47" stroke="#FB5607" stroke-width="11" stroke-dasharray="2 0"/>
+    <circle cx="95" cy="0" r="6" fill="#FB5607" stroke="none"/>
+  </g>
+  <!-- arrow -->
+  <g transform="translate(258,150)" fill="#c9c9d2"><text x="0" y="6" font-size="26">→</text></g>
+  <!-- right: full ring -->
+  <g transform="translate(390,150)" fill="none" stroke-linecap="round">
+    <path d="M0,-95 A95,95 0 1,1 -0.1,-95" stroke="#5057FF" stroke-width="13"/>
+    <path d="M0,-62 A62,62 0 1,1 -0.1,-62" stroke="#3B86FF" stroke-width="8" opacity=".9"/>
+    <path d="M40,-86 A95,95 0 0,1 92,24" stroke="#FB5607" stroke-width="13" opacity=".95"/>
+  </g>
+</svg>
+<figcaption>Resting code-ring (dashed, with the orange fiducial sector) → blooms into the living ring on scan. Illustrative — real geometry comes from the engine.</figcaption>
+</figure>
+
+<div class="grid2">
+  <div class="card"><h3>Reference points</h3>
+    <ul>
+      <li><b>WeChat code / App Clip</b> — a recognisable branded ring that <i>is</i> the scannable.</li>
+      <li>Difference: ours bends the code <b>along the ring's own strands</b>, and the "reveal" is a full generative animation, not a logo pop.</li>
+    </ul>
+  </div>
+  <div class="card"><h3>Two visual tiers (one knob)</h3>
+    <ul>
+      <li><b>Overt</b> — crisp dashes, clear quiet zones, easy for a plain CV reader. Default for functional scans.</li>
+      <li><b>Subtle</b> — denser, more "dust", needs the learned reader. For decorative surfaces.</li>
+    </ul>
+  </div>
+</div>
+</section>
+
+<!-- ============================================================= -->
+<section id="arch">
+<h2><span class="n">2</span>System architecture</h2>
+<p>One shared geometry core feeds two renderers (continuous brand ring + discrete code ring). A codec turns ids into symbol streams; a decoder turns camera frames back into ids; a verifier cross-checks the shape; the backend resolves ids to commands.</p>
+
+<figure>
+<svg width="100%" viewBox="0 0 860 250" role="img" aria-label="Module architecture">
+  <style>
+    .box{fill:#fff;stroke:#e6e6ea;rx:12}
+    .t{font:600 12.5px var(--sans),sans-serif;fill:#16161a}
+    .st{font:11px var(--mono),monospace;fill:#6b6b76}
+    .ln{stroke:#c9c9d2;stroke-width:1.5;fill:none;marker-end:url(#a)}
+    .hl{stroke:#5057FF}
+  </style>
+  <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#c9c9d2"/></marker></defs>
+  <!-- shared core -->
+  <rect class="box" x="20" y="100" width="150" height="56"/><text class="t" x="34" y="124">Shared geometry</text><text class="st" x="34" y="142">ringGeometry.ts</text>
+  <!-- renderers -->
+  <rect class="box" x="215" y="30" width="160" height="56"/><text class="t" x="229" y="54">Brand renderer</text><text class="st" x="229" y="72">stmRingCore.ts</text>
+  <rect class="box" x="215" y="168" width="160" height="56"/><text class="t" x="229" y="192">Code renderer</text><text class="st" x="229" y="210">ringCodeCore.ts</text>
+  <!-- codec -->
+  <rect class="box" x="420" y="168" width="150" height="56"/><text class="t" x="434" y="192">Codec</text><text class="st" x="434" y="210">ringCodec.ts</text>
+  <!-- decoder -->
+  <rect class="box" x="615" y="168" width="150" height="56"/><text class="t" x="629" y="192">Decoder</text><text class="st" x="629" y="210">ringDecoder.ts</text>
+  <!-- verify -->
+  <rect class="box" x="420" y="30" width="150" height="56"/><text class="t" x="434" y="54">Verifier</text><text class="st" x="434" y="72">ringVerify.ts</text>
+  <!-- backend -->
+  <rect class="box" x="615" y="30" width="150" height="56"/><text class="t" x="629" y="54">Backend resolver</text><text class="st" x="629" y="72">id → command</text>
+  <!-- lines -->
+  <path class="ln" d="M170,120 L215,70"/>
+  <path class="ln" d="M170,135 L215,190"/>
+  <path class="ln" d="M375,196 L420,196"/>
+  <path class="ln hl" d="M570,196 L615,196"/>
+  <path class="ln" d="M690,168 L500,86"/>
+  <path class="ln" d="M570,58 L615,58"/>
+</svg>
+<figcaption>Module map. The code path reuses brand geometry read-only; nothing in <code>stmRingCore.ts</code> is modified.</figcaption>
+</figure>
+
+<table>
+  <tr><th>Module</th><th>Responsibility</th></tr>
+  <tr><td><code>ringGeometry.ts</code> <span class="muted">(new, factored)</span></td><td>The shared, brand-rule-bound centre-line: epicycle sum → arc-length resample → fair points, plus a deterministic <b>self-crossing finder</b>. Pure, framework-free.</td></tr>
+  <tr><td><code>stmRingCore.ts</code> <span class="muted">(unchanged)</span></td><td>Existing continuous renderer + exporters. Re-points its geometry at <code>ringGeometry.ts</code> via re-export only (no behaviour change).</td></tr>
+  <tr><td><code>ringCodeCore.ts</code> <span class="muted">(new)</span></td><td>Discrete renderer: lays dash glyphs along the arc, honours quiet zones / crossing keep-outs, draws the fiducial. Emits the code-ring SVG + a "bloom" target frame.</td></tr>
+  <tr><td><code>ringCodec.ts</code> <span class="muted">(new)</span></td><td>Pure data: <code>encode(id) → symbols</code> and <code>decode(symbols) → id</code>. Framing, ECC, symbol mapping. No DOM, no pixels.</td></tr>
+  <tr><td><code>ringDecoder.ts</code> <span class="muted">(new)</span></td><td>Vision: camera frame → ring detection → trace/unwrap → symbol sampling → hands symbols to the codec.</td></tr>
+  <tr><td><code>ringVerify.ts</code> <span class="muted">(new)</span></td><td>Cheap invariant fingerprint of the captured shape (Fourier-descriptor + crossing signature) vs the decoded id's expected fingerprint.</td></tr>
+  <tr><td>Scanner UI <span class="muted">(new route)</span></td><td>Camera preview, alignment guidance, the dash → ring bloom, pass/fail theatre.</td></tr>
+</table>
+</section>
+
+<!-- ============================================================= -->
+<section id="visual">
+<h2><span class="n">3</span>Code-ring visual spec</h2>
+
+<h3>3.1 Geometry — the "code profile"</h3>
+<p>The code-ring draws from a <b>restricted, calmer subset</b> of the existing shape family, all still inside the brand rules, so there is plenty of clean arc to write on:</p>
+<ul>
+  <li><b>Symmetry OFF</b> — rotational symmetry creates a unique-start ambiguity; fatal for a scanner.</li>
+  <li><b>Low <code>k1</code></b> (fewer loops) and <b>no third epicycle</b> (<code>a3 = 0</code>) — fewer self-crossings, longer continuous runs.</li>
+  <li>Avoid the <code>knot</code> / high-lobe archetypes; prefer <code>classic</code> / light <code>rosette</code>.</li>
+  <li>The shape seed is <code>hash(payload-id)</code> through this restricted generator, so the silhouette still <b>authenticates</b> the id (one-way), while always being code-friendly.</li>
+</ul>
+
+<h3>3.2 The substrate — arc, lanes, slots</h3>
+<div class="kv">
+  <div>Track</div><div>The main loop's arc-length, <code>0 → L</code> (perimeter), in winding order.</div>
+  <div>Slots</div><div><code>N</code> equal arc-length cells around the loop (target <b>N = 32</b>).</div>
+  <div>Lanes</div><div>Optionally 2 radial sub-strands (inner / outer) per slot — the parallel curved sub-lines in your sketch — for +1 bit.</div>
+  <div>Glyph</div><div>Per slot: a curved dash whose <b>presence + length</b> (and lane / colour) encode the symbol.</div>
+  <div>Quiet zones</div><div>A clear gap each side of the fiducial and around crossings, so boundaries are unambiguous.</div>
+</div>
+
+<h3>3.3 The fiducial (absolute origin + direction)</h3>
+<div class="callout o">
+  <b>Reuse the charge arc.</b> The brand ring already has a vivid, position-controlled "charged" region. Make it the <b>fiducial</b>: a unique <span class="pill">orange</span> solid <i>comet</i> sector (thick → thin) placed at <code>slot 0</code>. It is colour-unique (data dashes never use orange), shape-unique (solid, not dashed), and <b>asymmetric</b> so it fixes both the origin <i>and</i> the winding direction in one feature. Because we don't need mirror-safety, that's all the orientation logic required.
+</div>
+
+<figure>
+<svg width="320" height="320" viewBox="-160 -160 320 320" role="img" aria-label="Frame layout around the loop">
+  <circle r="120" fill="none" stroke="#eef0ff" stroke-width="30"/>
+  <!-- slot ticks -->
+  <g stroke="#c9c9d2" stroke-width="2">
+    <!-- generate 32 ticks -->
+    <g id="ticks"></g>
+  </g>
+  <!-- fiducial sector at top -->
+  <path d="M0,-120 A120,120 0 0,1 84,-84" fill="none" stroke="#FB5607" stroke-width="30" stroke-linecap="round"/>
+  <text x="0" y="-134" text-anchor="middle" font-size="13" font-family="var(--mono),monospace" fill="#c5430a">fiducial · slot 0 →</text>
+  <!-- some data dashes -->
+  <g fill="none" stroke="#5057FF" stroke-width="22" stroke-linecap="round">
+    <path d="M104,60 A120,120 0 0,1 60,104"/>
+    <path d="M-30,116 A120,120 0 0,1 -104,60"/>
+    <path d="M-116,-30 A120,120 0 0,1 -84,-84"/>
+  </g>
+  <g fill="none" stroke="#3B86FF" stroke-width="14" stroke-linecap="round" opacity=".85">
+    <path d="M84,84 A120,120 0 0,1 30,116"/>
+    <path d="M-104,-60 A120,120 0 0,1 -60,-104"/>
+  </g>
+  <script>
+    // draw 32 slot ticks (runs when SVG is inlined in a browser)
+    (function(){var g=document.getElementById('ticks');if(!g)return;for(var i=0;i<32;i++){var a=(i/32)*2*Math.PI-Math.PI/2;var r1=103,r2=137;var x1=Math.cos(a)*r1,y1=Math.sin(a)*r1,x2=Math.cos(a)*r2,y2=Math.sin(a)*r2;g.innerHTML+='<line x1="'+x1.toFixed(1)+'" y1="'+y1.toFixed(1)+'" x2="'+x2.toFixed(1)+'" y2="'+y2.toFixed(1)+'"/>';}})();
+  </script>
+</svg>
+<figcaption>32 arc-length slots; the orange comet at slot 0 fixes origin + winding. Data dashes occupy the remaining slots; gaps mark crossings / quiet zones.</figcaption>
+</figure>
+
+<h3>3.4 Crossing keep-outs (the overlap problem)</h3>
+<p>Self-crossings occlude data and confuse tracing. We don't fight them:</p>
+<ol>
+  <li><b>Compute</b> every crossing analytically from the ordered points (segment–segment intersection) — exact, deterministic, in arc-length coordinates, with over/under known from draw order.</li>
+  <li><b>Reserve</b> a keep-out interval ±margin around each crossing; the slot layout skips those (a 1-D interval-packing on the cycle).</li>
+  <li><b>Exploit</b> them: the over/under weave keeps the top strand continuous through a crossing, so the tracer follows it; crossings double as <b>registration landmarks</b>.</li>
+</ol>
+</section>
+
+<!-- ============================================================= -->
+<section id="frame">
+<h2><span class="n">4</span>Data &amp; frame format</h2>
+<p>Whole-ring-in-one-frame means <b>no segment indexing</b>: one fiducial, one payload run, one whole-loop ECC, read in a single pass.</p>
+
+<pre><span class="c">// Logical frame, read clockwise from the fiducial</span>
+[ <span class="k">FIDUCIAL</span> ] [ <span class="k">VER</span> 2b ] [ <span class="k">PAYLOAD</span> 24–37b ] [ <span class="k">ECC</span> Reed–Solomon ] [ quiet ]
+        slot0      ver       the id pointer            parity         wrap
+
+<span class="c">// Payload is an opaque id; the backend maps id → command.</span>
+<span class="c">// Optional: PAYLOAD = id ++ HMAC(id) for signed/anti-spoof codes.</span></pre>
+
+<h3>4.1 Symbol alphabet (v1)</h3>
+<table>
+  <tr><th>Channel</th><th>States</th><th>Bits</th><th>Notes</th></tr>
+  <tr><td>Dash presence × length</td><td>gap · short · long</td><td>~1.6</td><td>Primary, most robust; survives colour drift across screens.</td></tr>
+  <tr><td>Lane (radial)</td><td>inner · outer</td><td>1</td><td>Optional; the parallel sub-lines in the sketch.</td></tr>
+  <tr><td>Colour</td><td>blue · blue2</td><td>1</td><td>Optional bonus; orange reserved for fiducial. Never the <i>only</i> carrier of a bit.</td></tr>
+</table>
+<p class="muted">Recommend v1 = presence×length + lane ≈ <b>2 bits/slot</b>, colour as a redundant/decorative channel only.</p>
+
+<h3>4.2 Capacity (target N = 32, ~30% lost to fiducial + keep-outs, ~45% ECC parity)</h3>
+<table>
+  <tr><th>Slots N</th><th>Bits/slot</th><th>Raw</th><th>After fiducial+keepout</th><th>Payload after ECC</th><th>≈ distinct ids</th></tr>
+  <tr><td>24</td><td>2</td><td>48</td><td>~34</td><td><b>~19 b</b></td><td>~520 K</td></tr>
+  <tr><td>32</td><td>2</td><td>64</td><td>~45</td><td><b>~25 b</b></td><td>~33 M</td></tr>
+  <tr><td>32</td><td>3</td><td>96</td><td>~67</td><td><b>~37 b</b></td><td>~137 B</td></tr>
+</table>
+<div class="callout g"><b>Verdict:</b> ~25–37 payload bits is plenty for a serial / command id, especially since the backend holds the real meaning and can remap it live. Aim for <b>N = 32, 2 bits/slot</b> in v1; bump to 3 bits or lanes if you need headroom.</div>
+</section>
+
+<!-- ============================================================= -->
+<section id="encode">
+<h2><span class="n">5</span>Encode pipeline <span class="muted" style="font-size:13px">(id → code-ring SVG)</span></h2>
+<div class="flow">
+  <div class="step"><div class="s">E1</div><h4>Shape seed</h4><p><code>seed = hash(id)</code> → code-profile generator → centre-line + crossings.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="s">E2</div><h4>Codeword</h4><p><code>ringCodec.encode(id)</code> → ver + payload + ECC symbols.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="s">E3</div><h4>Layout</h4><p>Place fiducial at slot 0; pack symbols into slots, skipping keep-outs.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="s">E4</div><h4>Render</h4><p>Emit curved dash glyphs along the arc → code-ring SVG (+ bloom target).</p></div>
+</div>
+<p class="muted">Deterministic and pure up to E4 — same id always yields the same code-ring. The SVG is a normal static export (settled pose, no animation) so it is stable to display and scan.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="decode">
+<h2><span class="n">6</span>Decode pipeline <span class="muted" style="font-size:13px">(camera frame → id)</span></h2>
+<div class="flow">
+  <div class="step"><div class="s">D1</div><h4>Capture</h4><p>Close-up frame(s) of a screen. Colour-segment brand-blue/orange strokes.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="s">D2</div><h4>Detect ring</h4><p>Find the closed loop; locate the orange comet → origin + direction.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="s">D3</div><h4>Trace / unwrap</h4><p>Follow the wire through crossings (over/under continuity) → 1-D arc signal.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="s">D4</div><h4>Sample</h4><p>Resample to N slots from the fiducial; read presence/length/lane per slot.</p></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="s">D5</div><h4>Codec</h4><p>Symbols → ECC decode → <code>id</code>.</p></div>
+</div>
+<div class="callout">
+  <b>Two implementations, same interface.</b> Start with <b>classical CV</b> (segment → skeleton → trace → sample). Upgrade hot spots — especially tracing through knots — with a <b>learned decoder</b> trained on <b>infinite synthetic data</b> from the encoder (render any id, augment with screen glare / skew / blur). Free labels are this project's superpower.
+</div>
+</section>
+
+<!-- ============================================================= -->
+<section id="verify">
+<h2><span class="n">7</span>Verification &amp; the scan experience</h2>
+
+<h3>7.1 Layer A — cheap shape check (machine)</h3>
+<p>After decoding <code>id</code>, confirm the captured shape really is that id's canonical render — without expensive pixel matching:</p>
+<ul>
+  <li><b>Fourier-descriptor fingerprint</b> — the curve <i>is</i> an epicycle sum, so a handful of low-order boundary harmonic magnitudes are a rotation/scale-invariant signature, almost free to compute and highly discriminative.</li>
+  <li><b>Crossing signature</b> — count + sorted arc-gaps between self-crossings; also invariant, already computed during tracing.</li>
+  <li>Compare measured vs the id's expected fingerprint within tolerance → reject spoofs / mis-reads before trusting the id.</li>
+</ul>
+
+<h3>7.2 Layer B — the bloom (the actual product)</h3>
+<div class="callout g">
+  On success, <b>render the live ring for the decoded id and morph the captured dashes into it</b>, registered onto the scanned ring using the fiducial + crossing landmarks. Reuse the existing engine: <code>buildRingMorph</code> / the settled-pose machinery / the charge arc igniting and drifting. Dust → flower → fully-formed glowing ring.
+</div>
+<table>
+  <tr><th>Scanner state</th><th>Visual</th></tr>
+  <tr><td>Searching</td><td>Live camera; faint predicted ring ghost that <b>snaps/locks</b> when alignment is good (on-brand replacement for QR corner-finding).</td></tr>
+  <tr><td>Locked + verified</td><td>Dashes <b>bloom</b> into the continuous living ring; charge arc lights; subtle settle. = "authentic".</td></tr>
+  <tr><td>Decoded but failed Layer A</td><td>Ring tries to form, then <b>glitches / refuses to settle</b>. = "not genuine / try again". Human-legible verdict, no text needed.</td></tr>
+</table>
+<p class="muted">Because payload is just an id, decode is fast enough that the bloom feels instant — the experience carries the perceived reliability.</p>
+</section>
+
+<!-- ============================================================= -->
+<section id="backend">
+<h2><span class="n">8</span>Backend &amp; realtime sync</h2>
+<ul>
+  <li>The code is a <b>stable pointer</b>; semantics live server-side. <code>id → command</code> can be remapped without reprinting/redisplaying.</li>
+  <li>Both displayer and reader are your web apps on the same (or linked) backend → resolution + state sync over the existing channel; a scanned id can trigger a live action and reflect back on the display in real time.</li>
+  <li>Optional <b>signed codes</b>: payload = <code>id ++ HMAC(id)</code> so only your backend-issued ids verify — pairs with the Layer-A shape check for tamper-evidence a plain QR can't offer.</li>
+</ul>
+</section>
+
+<!-- ============================================================= -->
+<section id="phases">
+<h2><span class="n">9</span>Phases &amp; milestones</h2>
+<table>
+  <tr><th>#</th><th>Milestone</th><th>Proves</th><th>Touches</th></tr>
+  <tr><td>0</td><td><b>Shared geometry refactor</b> — factor <code>ringGeometry.ts</code>; <code>stmRingCore</code> re-exports it unchanged.</td><td>No regression to brand ring.</td><td>geometry only</td></tr>
+  <tr><td>1</td><td><b>Code renderer (visual only)</b> — dashes along arc, fiducial, keep-outs; tune the "dust → ring" look.</td><td>The aesthetic is right.</td><td><code>ringCodeCore</code></td></tr>
+  <tr><td>2</td><td><b>Codec + clean-image decode</b> — encode id, decode from rendered SVG/PNG. Rotation-invariance + ECC.</td><td>The math closes end-to-end.</td><td><code>ringCodec</code>, <code>ringDecoder</code></td></tr>
+  <tr><td>3</td><td><b>The bloom (faked decode)</b> — scanner UI register + morph dashes → living ring.</td><td>The magic moment; de-risks the whole product.</td><td>Scanner UI</td></tr>
+  <tr><td>4</td><td><b>Camera decoder</b> — classical CV, then learned model on synthetic data.</td><td>Real screen → camera scanning.</td><td><code>ringDecoder</code></td></tr>
+  <tr><td>5</td><td><b>Verify + backend</b> — Layer-A fingerprint, signed codes, live <code>id → command</code> sync.</td><td>Trust + realtime semantics.</td><td><code>ringVerify</code>, backend</td></tr>
+</table>
+<div class="callout"><b>Sequencing opinion:</b> build <b>Phase 3 (the bloom) early, with a hardcoded id</b>. It's pure delight, costs little (the engine already morphs), and it tells you how much optical fidelity you actually need before investing in the hard CV.</div>
+</section>
+
+<!-- ============================================================= -->
+<section id="repo">
+<h2><span class="n">10</span>Repo / module plan</h2>
+<pre>stm-ring/
+  app/components/
+    ringGeometry.ts     <span class="c">// NEW — shared centre-line + arc-length + crossing finder</span>
+    stmRingCore.ts      <span class="c">// unchanged behaviour; geometry via re-export</span>
+    ringCodeCore.ts     <span class="c">// NEW — discrete code-ring renderer + bloom target</span>
+    ringCodec.ts        <span class="c">// NEW — id ↔ symbols (framing, ECC, mapping); pure</span>
+    ringDecoder.ts      <span class="c">// NEW — image → symbols (CV / learned)</span>
+    ringVerify.ts       <span class="c">// NEW — Fourier + crossing fingerprint</span>
+  app/scan/page.tsx     <span class="c">// NEW route — camera + alignment + bloom</span>
+  plans/
+    ring-code-spec.html <span class="c">// this document</span></pre>
+<div class="callout o"><b>Project rule respected:</b> per the handoff, <code>stmRingCore.ts</code> keeps byte-identical output — geometry is <i>factored out and re-exported</i>, not rewritten, and the code engine is an additive sibling.</div>
+</section>
+
+<!-- ============================================================= -->
+<section id="risks">
+<h2><span class="n">11</span>Risks &amp; open questions</h2>
+<table>
+  <tr><th>Item</th><th>Status / mitigation</th></tr>
+  <tr><td>Tracing the wire through knots (hardest CV)</td><td>Minimise via code profile; close-up helps; <b>learned decoder</b> on synthetic data is the real answer.</td></tr>
+  <tr><td>Minimum slot size vs screen pixels &amp; camera</td><td>Close-up + screen display is generous; still set a min feature size → caps N. Needs a quick capture test.</td></tr>
+  <tr><td>Colour fidelity across screens</td><td>Never make colour the sole carrier of a bit; presence/length is primary.</td></tr>
+  <tr><td>ECC scheme &amp; exact symbol map</td><td><b>Open</b> — pick Reed–Solomon parameters once N and bits/slot are fixed (next paper step).</td></tr>
+  <tr><td>Fiducial subtlety vs detectability</td><td>Overt tier: clear orange comet. Subtle tier: dimmer, lean on learned reader.</td></tr>
+</table>
+
+<h3>Still open for you</h3>
+<ol>
+  <li><b>Target N &amp; bits/slot</b> — confirm <code>N=32, 2 b/slot</code> as v1, or push for more payload?</li>
+  <li><b>Signed codes?</b> — include <code>HMAC(id)</code> for tamper-evidence, or plain pointer only?</li>
+  <li><b>Overt vs subtle</b> as the default tier for the first build?</li>
+</ol>
+
+<hr>
+<p class="muted">Next concrete paper step on request: a fixed <b>symbol map + Reed–Solomon parameters + exact slot/keep-out layout algorithm</b> for <code>N=32</code>, ready to implement in Phase 2.</p>
+</section>
+
+</main>
+</div>
+</body>
+</html>

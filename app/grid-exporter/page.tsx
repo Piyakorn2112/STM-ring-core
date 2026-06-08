@@ -5,20 +5,21 @@
  * whole thing as ONE self-contained SVG.
  *
  * PERFORMANCE (all at this layer — the ring core is untouched):
- *  - All controls live in ONE state object so its identity only changes on edit;
- *    `useDeferredValue` then lets the sliders stay responsive while the heavy
- *    grid build runs at low priority and coalesces to ~once per settle, instead
- *    of firing a full rebuild on every dragged pixel.
- *  - The on-screen preview is rendered at an ADAPTIVE quality budget: small grids
- *    show full detail, huge grids automatically drop segment/piece counts so the
- *    preview stays cheap. The DOWNLOAD always uses the user's full settings.
- *  - The preview <img> uses a Blob object URL (no multi-MB encodeURIComponent on
- *    the main thread each change).
+ *  - The heavy `exportGridSVG` build runs in a Web Worker (`gridWorker.ts`), so
+ *    it never blocks the main thread: the UI stays interactive and the preview
+ *    swaps in when ready, with the previous frame held meanwhile (no flashing).
+ *    If a worker can't be created it falls back to a deferred main-thread build.
+ *  - Preview quality is scaled to the VIEWPORT: segment/piece counts track the
+ *    actual on-screen pixel size of one ring (cell size × fit-scale × DPR), so a
+ *    grid shrunk to fit is built at a fraction of the cost. The DOWNLOAD always
+ *    uses the user's full settings.
+ *  - `useDeferredValue` coalesces rapid edits before they reach the worker; the
+ *    preview <img> uses a Blob object URL (no multi-MB encode on the main thread).
  */
 
 import Link from "next/link";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
-import { type ColorMode, exportGridSVG, PALETTE, randomSeed } from "../components/stmRingCore";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { type ColorMode, exportGridSVG, PALETTE, randomSeed, VIEW_H, VIEW_W } from "../components/stmRingCore";
 import { byteSize, flattenGridSvg, formatBytes } from "../components/svgExportUtils";
 
 type Config = {
@@ -59,11 +60,21 @@ const DEFAULTS: Config = {
 const BRAND_TINTS = PALETTE; // ["#5057FF", "#3B86FF", "#FB5607"]
 const MONO_TINTS = ["#000000", "#ffffff"];
 
-// Adaptive preview budget — keep the on-screen build cheap no matter the grid
-// size by spreading a fixed amount of work across the cells. Download ignores
-// this and uses the user's exact segments/pieces.
-const SAMPLE_BUDGET = 14000; // ≈ rings × segments ceiling for the preview
-const PIECE_BUDGET = 3600; // ≈ rings × pieces ceiling for the preview
+// Viewport-scaled preview quality. The detail a ring needs is bounded by how
+// many pixels it actually occupies on screen — there's no point sampling a
+// 700-point centre-line for a ring drawn 40 px wide. Given the displayed pixel
+// width of one ring, pick segment/piece counts proportional to it (capped by the
+// user's own settings). Download ignores this and uses the exact settings.
+const SEG_PER_PX = 1.4; // centre-line samples per displayed pixel of ring width
+const SEG_FLOOR = 60;
+const PIECE_RATIO = 0.25; // strands ≈ N/4 (matches the engine's clean 4:1 ratio)
+const PIECE_FLOOR = 20;
+
+function previewQuality(ringPx: number, maxSeg: number, maxPiece: number) {
+  const segments = Math.max(SEG_FLOOR, Math.min(maxSeg, Math.round(ringPx * SEG_PER_PX)));
+  const pieces = Math.max(PIECE_FLOOR, Math.min(maxPiece, Math.round(segments * PIECE_RATIO)));
+  return { segments, pieces };
+}
 
 function buildOptions(cfg: Config, segments: number, pieces: number) {
   return {
@@ -295,29 +306,107 @@ export default function GridExporterPage() {
   const [exportInfo, setExportInfo] = useState<string | null>(null);
 
   // The preview tracks a DEFERRED copy of the config: dragging a slider updates
-  // `cfg` instantly (responsive UI) while the expensive build follows behind.
+  // `cfg` instantly (responsive UI) while the build follows behind / off-thread.
   const previewCfg = useDeferredValue(cfg);
-  const isStale = previewCfg !== cfg;
 
-  const rings = previewCfg.rows * previewCfg.cols;
-  const previewSegments = Math.max(80, Math.min(previewCfg.segments, Math.floor(SAMPLE_BUDGET / rings)));
-  const previewPieces = Math.max(24, Math.min(previewCfg.pieces, Math.floor(PIECE_BUDGET / rings)));
-  const previewCapped = previewSegments < previewCfg.segments || previewPieces < previewCfg.pieces;
+  // --- viewport measurement: how big is the preview pane, in CSS px? ---------
+  const paneRef = useRef<HTMLDivElement>(null);
+  const [pane, setPane] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      // Round to 24px steps so ordinary resizes don't churn the quality/build.
+      setPane({ w: Math.round(width / 24) * 24, h: Math.round(height / 24) * 24 });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-  const previewSvg = useMemo(
-    () => exportGridSVG(buildOptions(previewCfg, previewSegments, previewPieces)),
-    [previewCfg, previewSegments, previewPieces],
-  );
+  // Displayed pixel width of ONE ring = cell size × (scale that fits the grid in
+  // the pane) × device pixel ratio (capped). This is the "limit to the viewport"
+  // lever: shrink the grid to fit and every ring is built at its on-screen size.
+  const previewOpts = useMemo(() => {
+    const naturalW = previewCfg.padding * 2 + previewCfg.cols * previewCfg.cellSize + (previewCfg.cols - 1) * previewCfg.xGap;
+    const cellH = (previewCfg.cellSize * VIEW_H) / VIEW_W;
+    const naturalH = previewCfg.padding * 2 + previewCfg.rows * cellH + (previewCfg.rows - 1) * previewCfg.yGap;
+    const availW = Math.max(1, pane.w - 72); // pane padding (36×2)
+    const availH = Math.max(1, pane.h - 96); // padding + caption
+    const fit = pane.w > 0 ? Math.min(availW / naturalW, availH / naturalH, 1) : 1;
+    const dpr = typeof window !== "undefined" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+    const ringPx = previewCfg.cellSize * fit * dpr;
+    const { segments, pieces } = previewQuality(ringPx, previewCfg.segments, previewCfg.pieces);
+    return buildOptions(previewCfg, segments, pieces);
+  }, [previewCfg, pane]);
+  const previewCapped =
+    previewOpts.segments < previewCfg.segments || previewOpts.pieces < previewCfg.pieces;
 
-  // Blob object URL for the preview image — avoids encoding a multi-MB string on
-  // the main thread every change. Built in render (no setState churn) and revoked
-  // by a cleanup-only effect when it changes / on unmount.
-  const previewUrl = useMemo(
-    () => URL.createObjectURL(new Blob([previewSvg], { type: "image/svg+xml" })),
-    [previewSvg],
-  );
-  useEffect(() => () => URL.revokeObjectURL(previewUrl), [previewUrl]);
+  // The identity of the build we WANT on screen; the build we HAVE is `shownKey`.
+  // `pending` is derived from the two, so setState never runs in an effect body.
+  const buildKey = useMemo(() => JSON.stringify(previewOpts), [previewOpts]);
 
+  // --- preview pipeline: build (worker if possible) → Blob URL → <img> -------
+  const workerRef = useRef<Worker | null>(null);
+  const urlRef = useRef<string>(""); // current object URL, for revocation
+  const reqIdRef = useRef(0); // monotonic request id
+  const shownRef = useRef(0); // highest reqId already shown (drop stale)
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [shownKey, setShownKey] = useState("");
+
+  // Swap in a freshly-built SVG, revoking the previous URL. Stable identity so
+  // it can sit in effect deps without re-running them.
+  const showSvg = useCallback((svg: string, key: string) => {
+    const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    urlRef.current = url;
+    setPreviewUrl(url);
+    setShownKey(key);
+  }, []);
+
+  // Spin up the worker once. Falls back to main-thread builds if unavailable.
+  useEffect(() => {
+    try {
+      const w = new Worker(new URL("./gridWorker.ts", import.meta.url));
+      w.onmessage = (e: MessageEvent<{ reqId: number; key: string; svg: string }>) => {
+        const { reqId, key, svg } = e.data;
+        if (reqId < shownRef.current) return; // a newer build already won
+        shownRef.current = reqId;
+        showSvg(svg, key);
+      };
+      w.onerror = () => { workerRef.current = null; }; // fall back on runtime error
+      workerRef.current = w;
+    } catch {
+      workerRef.current = null;
+    }
+    return () => {
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    };
+  }, [showSvg]);
+
+  // Dispatch a build whenever the wanted build (config × viewport quality) changes.
+  // setState only happens later in the worker callback / timeout — never in this
+  // effect body — so the previous frame stays on screen until the new one is ready
+  // (no blanking; no main-thread stutter when a worker is present).
+  useEffect(() => {
+    if (pane.w === 0) return; // wait for first measure
+    const reqId = ++reqIdRef.current;
+    const w = workerRef.current;
+    if (w) {
+      w.postMessage({ reqId, key: buildKey, opts: previewOpts });
+      return;
+    }
+    const t = setTimeout(() => {
+      if (reqId < shownRef.current) return;
+      shownRef.current = reqId;
+      showSvg(exportGridSVG(previewOpts), buildKey);
+    }, 0);
+    return () => clearTimeout(t);
+  }, [previewOpts, buildKey, pane.w, showSvg]);
+
+  const isStale = buildKey !== shownKey;
   const ringCount = cfg.rows * cfg.cols;
 
   const download = () => {
@@ -526,8 +615,9 @@ export default function GridExporterPage() {
         )}
       </div>
 
-      {/* RIGHT — live preview (the exact export, at adaptive preview quality) */}
+      {/* RIGHT — live preview (the exact export, at viewport-scaled quality) */}
       <div
+        ref={paneRef}
         style={{
           flex: 1,
           height: "100%",

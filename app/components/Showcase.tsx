@@ -8,6 +8,7 @@ export default function Showcase() {
   const [seed, setSeed] = useState("");
   const [grayscale, setGrayscale] = useState(false);
   const [animate, setAnimate] = useState(false);
+  const [animateColor, setAnimateColor] = useState(false);
   const s = seed.trim();
 
   // Download the *deterministic* SVG for the current seed (twisted) — or the
@@ -38,6 +39,7 @@ export default function Showcase() {
         forceSeed={s || null}
         grayscale={grayscale}
         animate={animate}
+        animateColor={animateColor}
       />
 
       <div
@@ -128,9 +130,33 @@ export default function Showcase() {
           <input
             type="checkbox"
             checked={animate}
-            onChange={(e) => setAnimate(e.target.checked)}
+            onChange={(e) => {
+              setAnimate(e.target.checked);
+              if (e.target.checked) setAnimateColor(false);
+            }}
           />
           Animate
+        </label>
+        <label
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 7,
+            fontSize: 13,
+            color: "#52525b",
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={animateColor}
+            onChange={(e) => {
+              setAnimateColor(e.target.checked);
+              if (e.target.checked) setAnimate(false);
+            }}
+          />
+          Animate color
         </label>
       </div>
 

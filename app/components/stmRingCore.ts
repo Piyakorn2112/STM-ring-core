@@ -191,6 +191,10 @@ type Twist = {
   w3: number;
   spin: number;
   spinSpeed: number;
+  // Exact n-fold rotational symmetry order: 0 = free-form, else Cₙ (n ∈ 2..6).
+  // Read-only metadata for callers that want to select/verify by fold count
+  // (e.g. the bloom-code); ignored by every renderer, so output is unchanged.
+  sym: number;
 };
 
 // The lit-arc palette: a vivid primary core with mostly complementary fringes.
@@ -382,6 +386,7 @@ export function makeHover(id: number | string): Hover {
     w3: drift(0.05, 0.11),
     spin: r() * TAU,
     spinSpeed: drift(0.04, 0.09),
+    sym,
   };
 
   return { baseFlow, charge, colorPhase, colorDrift, chargeFrac, twist };
@@ -489,7 +494,9 @@ export type RingFrame = {
 
 // 1) centre-line (epicycle, oversampled) → even arc-length resample → fair.
 // Returns N fair points; isolated so two seeds can be morphed point-for-point.
-function centreLine(
+// Exported as a stable SEAM: sibling renderers (e.g. the ring-code generator)
+// build on this exact brand-rule-bound geometry instead of re-deriving it.
+export function centreLine(
   t: number,
   twistT: number,
   morph: number,
@@ -642,10 +649,41 @@ export function buildRing(
   grayscale = false,
   white = false,
   tintLab?: Lab, // optional single-colour override (no-op when undefined)
+  // Optional: drive the CHARGE (colour intensity) from a separate morph than the
+  // geometry, so the lit arc can fade in / drift while the wire stays at its rest
+  // (untwisted) shape. Defaults to `morph`, so existing callers are byte-identical.
+  chargeMorph: number = morph,
 ): RingFrame {
   const { px, py } = centreLine(t, twistT, morph, h, N);
-  const { lab, alpha } = chargeField(twistT, morph, h, N, grayscale, white, tintLab);
+  const { lab, alpha } = chargeField(twistT, chargeMorph, h, N, grayscale, white, tintLab);
   return assemble(px, py, lab, alpha, N, K);
+}
+
+// The DISPLAYED colour the ring would show at each centre-line vertex — the dark
+// horizontal base gradient composited with the lit charge (by its own alpha),
+// returned as ready CSS. Exposed as a SEAM so a masking/dashing renderer can
+// colour its marks with the ring's OWN colour mapping (the brand OKLab + charge
+// logic stays here, the single source of truth). Pure; no effect on any flow.
+export function sampleRingColors(
+  twistT: number,
+  morph: number,
+  h: Hover,
+  px: number[], // x of each centre-line vertex (drives the base gradient)
+  grayscale = false,
+  white = false,
+): string[] {
+  const N = px.length;
+  const { lab, alpha } = chargeField(twistT, morph, h, N, grayscale, white);
+  const span = GRAD_X2 - GRAD_X1 || 1;
+  const baseA = hexToOklab(DARK_BASE[0]);
+  const baseB = hexToOklab(DARK_BASE[1]);
+  const out = new Array<string>(N);
+  for (let i = 0; i < N; i++) {
+    const tB = clamp01((px[i] - GRAD_X1) / span);
+    const base = white ? WHITE_LAB : mixLab(baseA, baseB, tB);
+    out[i] = oklabToCss(mixLab(base, lab[i], alpha[i])); // charge over base by alpha
+  }
+  return out;
 }
 
 // Geometric morph between two seeds: build BOTH fair centre-lines and blend
@@ -822,7 +860,7 @@ export function exportSVG(opts: {
 const SETTLE_T = 10;
 const SETTLE_TAU = 0.22;
 const SETTLE_PROGRESS = 1 - Math.exp(-SETTLE_T / SETTLE_TAU);
-const SETTLE_POSE = {
+export const SETTLE_POSE = {
   morph: SETTLE_PROGRESS, // TARGET_MORPH = 1
   t: SETTLE_T,
   twistT: SETTLE_T - SETTLE_TAU * SETTLE_PROGRESS,

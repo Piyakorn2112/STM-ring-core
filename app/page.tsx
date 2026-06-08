@@ -81,6 +81,34 @@ export default function Home() {
         >
           Grid Export ↗
         </Link>
+        <Link
+          href="/code"
+          style={{
+            padding: "9px 16px",
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: "0.02em",
+            color: "#fff",
+            background: "#5827E0",
+            borderRadius: 10,
+          }}
+        >
+          Code ↗
+        </Link>
+        <Link
+          href="/scan"
+          style={{
+            padding: "9px 16px",
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: "0.02em",
+            color: "#fff",
+            background: "#111",
+            borderRadius: 10,
+          }}
+        >
+          Scan ↗
+        </Link>
       </nav>
 
       <div

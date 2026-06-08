@@ -61,6 +61,7 @@ export default function StmRing({
   forceSeed = null,
   grayscale = false,
   animate = false,
+  animateColor = false,
   white = false,
   segments = N_LIVE,
   pieces = K_LIVE,
@@ -71,6 +72,9 @@ export default function StmRing({
   forceSeed?: string | null;
   grayscale?: boolean;
   animate?: boolean;
+  /** Animate the charge colour flowing while the wire stays at its rest
+   *  (untwisted) shape — the usual hover colour flow, minus the twist. */
+  animateColor?: boolean;
   white?: boolean;
   /** Centre-line samples / strand count. Lower = cheaper (for big decorative
    *  rings where detail is invisible). Defaults match the core ring exactly. */
@@ -98,6 +102,10 @@ export default function StmRing({
   const animRef = useRef(animate);
   const hoverBRef = useRef<Hover>(makeHover(randomSeed()));
   const blendRef = useRef(0);
+  // Animate-colour mode: hold the rest (untwisted) shape, but ramp the charge in
+  // and drift it — driven by a separate `chargeMorph` so geometry stays at rest.
+  const animColorRef = useRef(animateColor);
+  const colorMorphRef = useRef(0);
   // One-shot morph between two forced seeds (smooth swap when forceSeed changes).
   const oneShotRef = useRef(false);
   const uid = useId().replace(/:/g, "");
@@ -125,11 +133,22 @@ export default function StmRing({
       last = now;
       // Animate mode keeps the wire fully formed and cycles seeds itself.
       if (animRef.current) targetRef.current = 1;
+      // Animate-colour mode holds the GEOMETRY at its rest (untwisted) shape.
+      else if (animColorRef.current) targetRef.current = 0;
       const dist = targetRef.current - morphRef.current;
       if (Math.abs(dist) < 0.0008) morphRef.current = targetRef.current;
       else morphRef.current += dist * (1 - Math.exp(-dt / TAU));
       const m = morphRef.current;
-      twistT.current += m * dt;
+      // Charge intensity normally tracks the geometry morph; in animate-colour
+      // mode it ramps in and drifts on its own while the wire stays at rest.
+      let chargeMorph = m;
+      if (animColorRef.current && !animRef.current) {
+        colorMorphRef.current += (1 - colorMorphRef.current) * (1 - Math.exp(-dt / TAU));
+        chargeMorph = colorMorphRef.current;
+        twistT.current += dt; // drift the colour even though the wire is at rest
+      } else {
+        twistT.current += m * dt;
+      }
 
       let fr;
       if (animRef.current) {
@@ -188,6 +207,8 @@ export default function StmRing({
           pieceRef.current,
           grayRef.current,
           whiteRef.current,
+          undefined,
+          chargeMorph,
         );
       }
       baseRef.current?.setAttribute("d", fr.d);
@@ -272,8 +293,20 @@ export default function StmRing({
     }
   }, [animate, forceSeed]);
 
+  useEffect(() => {
+    animColorRef.current = animateColor;
+    if (animateColor) {
+      colorMorphRef.current = 0; // fade the charge in from rest
+    } else if (!animRef.current) {
+      // back to normal: settle on whatever forceSeed dictates (charge follows m)
+      const seed = forceSeed?.trim();
+      hoverRef.current = seed ? makeHover(seed) : REST_HOVER;
+      targetRef.current = seed ? 1 : 0;
+    }
+  }, [animateColor, forceSeed]);
+
   const onEnter = () => {
-    if (forcedRef.current || animRef.current) return;
+    if (forcedRef.current || animRef.current || animColorRef.current) return;
     if (morphRef.current < 0.12) hoverRef.current = makeHover(randomSeed());
     targetRef.current = 1;
   };

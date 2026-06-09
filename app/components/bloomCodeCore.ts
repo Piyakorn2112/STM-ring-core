@@ -29,13 +29,15 @@ import { CX, CY, exportThumbnailSVG, makeHover, PALETTE, VIEW_W } from "./stmRin
 export const BLOOM = {
   CAN: 300, // square canvas (in the flower's own units)
   C: 150, // centre (CAN/2)
-  RINGS: [90, 104, 118, 132] as const, // 4 concentric data rings (clear the bloom ~R72)
-  N_SLOTS: 24, // angular slots/ring — coarse enough to stay distinct at distance
-  REG_R: 142, // outer registration-circle radius
+  // 5 concentric data rings hugging the bloom (outer edge ~R72) and filling the
+  // annulus out to the registration circle — the multilayered, App-Clip-style field.
+  RINGS: [80, 92, 104, 116, 128] as const,
+  N_SLOTS: 22, // angular slots/ring (~16° each — stays distinct at distance)
+  REG_R: 140, // outer registration-circle radius
   GAP: 0.16, // half-angle (rad) of the origin gap
   TICK_ANG: -0.34, // winding-reference tick angle
-  SLOT_FILL: 0.6, // arc fraction a dash fills (clear gaps → distinct far away)
-  CENTRE_R: 82, // radius of the centre region used for shape verification
+  SLOT_FILL: 0.66, // arc fraction a dash fills (clear gaps → distinct far away)
+  CENTRE_R: 75, // radius of the centre region used for shape verification (< ring 0)
 };
 export const LAYERS = BLOOM.RINGS.length;
 export const SLOTS_PER = BLOOM.N_SLOTS - 1; // slot 0 reserved (origin gap zone)
@@ -48,12 +50,12 @@ const REG_W = 2.7;
 const DOT_W = 4.2;
 const f2 = (v: number) => v.toFixed(2);
 
-// Which frame bit a (ring, slot) cell carries. The +ring·8 offset places every
-// frame bit's copies ~8 slots (120°) apart AND on different rings — so each bit gets
-// ≥2 copies that no obscuring wedge narrower than ~120° can all erase at once. That
-// spread is what makes the code obscure-safe (copies decided by majority vote).
+// Which frame bit a (ring, slot) cell carries. The +ring·7 offset places every frame
+// bit's copies ~7 slots (~115°) apart AND on different rings — so each bit gets several
+// copies that no obscuring wedge narrower than ~115° can all erase at once. That spread
+// is what makes the code obscure-safe (copies decided by majority vote).
 export const frameBitAt = (ring: number, slot: number): number =>
-  ((slot - 1) + ring * 8) % FRAME_BITS;
+  ((slot - 1) + ring * 7) % FRAME_BITS;
 
 export type BloomSeed = { k: number; fold: number; seed: string };
 
@@ -140,15 +142,21 @@ export function encodeBloomSVG(payload: number, opts: BloomOpts = {}): string {
   const ty = BLOOM.C + BLOOM.REG_R * Math.sin(BLOOM.TICK_ANG);
   body += `<circle cx="${f2(tx)}" cy="${f2(ty)}" r="${f2(DOT_W * 0.62)}" fill="${ink}"/>`;
 
-  // Data: short concentric dashes — one per on-slot, well-spaced, across 4 layers.
+  // Data: concentric dashes across all layers. Consecutive on-slots in a ring MERGE
+  // into one flowing arc (the App-Clip look) while isolated on-slots stay short — both
+  // keep a SLOT_FILL gap at each end so every slot stays distinct for the reader.
   const grid = encodeBloomGrid(payload);
+  const slotAng = (2 * Math.PI) / BLOOM.N_SLOTS;
+  const half = (BLOOM.SLOT_FILL * Math.PI) / BLOOM.N_SLOTS;
   for (let ring = 0; ring < LAYERS; ring++) {
     const r = BLOOM.RINGS[ring];
-    for (let s = 1; s < BLOOM.N_SLOTS; s++) {
-      if (!grid[ring][s]) continue;
-      const th = (s / BLOOM.N_SLOTS) * 2 * Math.PI;
-      const half = (BLOOM.SLOT_FILL * Math.PI) / BLOOM.N_SLOTS;
-      body += arc(r, th - half, th + half, DOT_W, ink);
+    let s = 1;
+    while (s < BLOOM.N_SLOTS) {
+      if (!grid[ring][s]) { s++; continue; }
+      let e = s;
+      while (e + 1 < BLOOM.N_SLOTS && grid[ring][e + 1]) e++;
+      body += arc(r, s * slotAng - half, e * slotAng + half, DOT_W, ink);
+      s = e + 1;
     }
   }
 

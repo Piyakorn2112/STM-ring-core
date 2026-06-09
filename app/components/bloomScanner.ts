@@ -38,123 +38,106 @@ export function inkMask(data: Uint8ClampedArray | Uint8Array, W: number, H: numb
   return { m, W, H };
 }
 
-// (2) Registration circle. A bounding box gives a rough centre+radius; then a Kåsa
-// least-squares fit on the points lying on the outer ring refines it — which stays
-// accurate even when a big arc is occluded (the surviving 2/3 still constrains it),
-// so the polar frame holds up under heavy obscuring.
+// (2) Registration. With no dedicated outer circle, the OUTERMOST data ring is the
+// frame: a bounding box gives a rough centre, a radial histogram locates the outer
+// ring (skipping the sparse rotation dot beyond it), and a Kåsa least-squares fit —
+// with one outlier-rejection refit so the dot can't pull it — pins centre + radius.
 export function fitCircle({ m, W, H }: Mask): Circle | null {
+  // Collect ink points and a bbox-centre seed (robust to lopsided data; the dot only
+  // nudges one axis a little).
+  const px: number[] = [], py: number[] = [];
   let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       if (!m[y * W + x]) continue;
+      px.push(x); py.push(y);
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     }
   }
-  if (maxX < 0) return null;
-  let cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  let R = (maxX - minX + (maxY - minY)) / 4;
+  if (px.length < 40) return null;
+  const bbx = (minX + maxX) / 2, bby = (minY + maxY) / 2;
+  let cmx = 0, cmy = 0;
+  for (let i = 0; i < px.length; i++) { cmx += px[i]; cmy += py[i]; }
+  cmx /= px.length; cmy /= px.length;
+  const maxR = Math.max(maxX - minX, maxY - minY) / 2;
+  const BIN = 2;
+  const nb = Math.ceil((maxR * 1.15) / BIN) + 1;
 
-  // Kåsa fit on outer-ring points (radius within a tight band of the rough R, so the
-  // inner data rings are excluded). Solve z = u·x + v·y + w, z = x²+y².
-  let n = 0, Sx = 0, Sy = 0, Sxx = 0, Syy = 0, Sxy = 0, Sxz = 0, Syz = 0, Sz = 0;
-  const lo = (0.955 * R) ** 2, hi = (1.05 * R) ** 2;
+  // Centre search: the true centre snaps the 4 concentric rings into sharp radial
+  // peaks, so the radius histogram's "energy" (Σ count²) is maximised there. Search a
+  // wide window around BOTH the bbox and centroid seeds (lopsided data biases each
+  // differently), coarse then fine.
+  const hist = new Int32Array(nb);
+  const score = (cx: number, cy: number): number => {
+    hist.fill(0);
+    for (let i = 0; i < px.length; i++) {
+      const r = Math.hypot(px[i] - cx, py[i] - cy);
+      hist[Math.min(nb - 1, Math.floor(r / BIN))]++;
+    }
+    let s = 0;
+    for (let b = 0; b < nb; b++) s += hist[b] * hist[b];
+    return s;
+  };
+  let bestX = bbx, bestY = bby, bestS = -1;
+  for (const [sx, sy] of [[bbx, bby], [cmx, cmy]]) {
+    for (let dy = -20; dy <= 20; dy += 2) {
+      for (let dx = -20; dx <= 20; dx += 2) {
+        const s = score(sx + dx, sy + dy);
+        if (s > bestS) { bestS = s; bestX = sx + dx; bestY = sy + dy; }
+      }
+    }
+  }
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const s = score(bestX + dx, bestY + dy);
+      if (s > bestS) { bestS = s; bestX += dx; bestY += dy; }
+    }
+  }
+
+  // Outer data ring = outermost substantial histogram peak (skips the sparse dot).
+  score(bestX, bestY);
+  let peak = 0;
+  for (let b = 0; b < nb; b++) if (hist[b] > peak) peak = hist[b];
+  let R = maxR;
+  for (let b = nb - 1; b >= 0; b--) {
+    if (hist[b] >= Math.max(12, peak * 0.35)) { R = (b + 0.5) * BIN; break; }
+  }
+  return { cx: bestX, cy: bestY, R };
+}
+
+// (3) Origin reference = the lone rotation dot, the only ink sitting OUTSIDE the outer
+// data ring. Its angle, minus the known dot offset, gives the origin. Returns null if
+// no dot is found (so the caller can bail rather than misread).
+export function findOriginDot({ m, W, H }: Mask, { cx, cy, R }: Circle): number | null {
+  // R is the outer-ring radius; the dot is at DOT_POS/REG_RING × R, comfortably beyond.
+  const beyond = (R * 1.06) ** 2;
+  let sx = 0, sy = 0, n = 0;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       if (!m[y * W + x]) continue;
-      const dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy;
-      if (d2 < lo || d2 > hi) continue;
-      const z = x * x + y * y;
-      n++; Sx += x; Sy += y; Sxx += x * x; Syy += y * y; Sxy += x * y;
-      Sxz += x * z; Syz += y * z; Sz += z;
+      const dx = x - cx, dy = y - cy;
+      if (dx * dx + dy * dy < beyond) continue;
+      sx += x; sy += y; n++;
     }
   }
-  if (n >= 16) {
-    // 3×3 normal equations for [u, v, w]
-    const A = [[Sxx, Sxy, Sx], [Sxy, Syy, Sy], [Sx, Sy, n]];
-    const B = [Sxz, Syz, Sz];
-    const sol = solve3(A, B);
-    if (sol) {
-      const [u, v, w] = sol;
-      const a = u / 2, b = v / 2;
-      const rr = w + a * a + b * b;
-      if (rr > 0) { cx = a; cy = b; R = Math.sqrt(rr); }
-    }
-  }
-  return { cx, cy, R };
+  if (n < 3) return null;
+  const dotAngle = Math.atan2(sy / n - cy, sx / n - cx);
+  return dotAngle - BLOOM.TICK_ANG; // origin = dot angle − dot's offset from origin
 }
 
-// Tiny 3×3 solver (Cramer's rule) for the circle-fit normal equations.
-function solve3(A: number[][], B: number[]): [number, number, number] | null {
-  const det = (M: number[][]) =>
-    M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) -
-    M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
-    M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
-  const d = det(A);
-  if (Math.abs(d) < 1e-9) return null;
-  const col = (i: number) => A.map((row, r) => row.map((v, c) => (c === i ? B[r] : v)));
-  return [det(col(0)) / d, det(col(1)) / d, det(col(2)) / d];
-}
-
-// (3) Origin = the inkless arc on the registration circle whose WIDTH matches the
-// known origin gap (2·GAP). Picking by closest-width — not longest — keeps occlusion
-// robust: a covered wedge makes a much WIDER gap and is ignored, so the origin stays
-// locked even with a chunk of the code obscured.
-export function findOriginGap({ m, W, H }: Mask, { cx, cy, R }: Circle): number {
-  const NS = 1440;
-  const pres = new Uint8Array(NS);
-  for (let i = 0; i < NS; i++) {
-    const th = (i / NS) * 2 * Math.PI;
-    for (let dr = -4; dr <= 4; dr++) {
-      const r = R + dr;
-      const x = Math.round(cx + r * Math.cos(th));
-      const y = Math.round(cy + r * Math.sin(th));
-      if (x >= 0 && y >= 0 && x < W && y < H && m[y * W + x]) { pres[i] = 1; break; }
-    }
-  }
-  const expected = ((2 * BLOOM.GAP) / (2 * Math.PI)) * NS;
-  let bestDiff = Infinity, bestStart = 0, bestLen = expected;
-  for (let i = 0; i < NS * 2; ) {
-    if (pres[i % NS]) { i++; continue; }
-    let j = i;
-    while (j < NS * 2 && !pres[j % NS]) j++;
-    const len = j - i;
-    if (len <= NS) {
-      const diff = Math.abs(len - expected);
-      if (diff < bestDiff) { bestDiff = diff; bestStart = i; bestLen = len; }
-    }
-    i = j;
-  }
-  return (((bestStart + bestLen / 2) % NS) / NS) * 2 * Math.PI;
-}
-
-// Is the registration circle present at absolute angle `th`? An angle where it is
-// MISSING (other than the small origin gap) means that sector is occluded/cropped —
-// the obscure-safe signal: such slots are read as "unknown", not as confident 0.
-function regPresent({ m, W, H }: Mask, { cx, cy, R }: Circle, th: number): boolean {
-  for (let dr = -5; dr <= 5; dr++) {
-    const r = R + dr;
-    const x = Math.round(cx + r * Math.cos(th));
-    const y = Math.round(cy + r * Math.sin(th));
-    if (x >= 0 && y >= 0 && x < W && y < H && m[y * W + x]) return true;
-  }
-  return false;
-}
-
-// (4) Sample the 4 data rings into a grid at the given origin. A slot whose sector is
-// occluded (registration circle absent there) is marked -1 (unknown).
+// (4) Sample the 4 data rings into a grid at the given origin. `R` is the fitted
+// outer-ring radius, so the polar scale is R / REG_RING.
 function readGrid(mask: Mask, circle: Circle, origin: number): number[][] {
   const { m, W, H } = mask;
   const { cx, cy, R } = circle;
-  const scale = R / BLOOM.REG_R;
+  const scale = R / BLOOM.REG_RING;
   const grid: number[][] = Array.from({ length: LAYERS }, () => new Array(BLOOM.N_SLOTS).fill(0));
   for (let s = 1; s < BLOOM.N_SLOTS; s++) {
     const th = origin + (s / BLOOM.N_SLOTS) * 2 * Math.PI;
-    const occluded = !regPresent(mask, circle, th);
     for (let ring = 0; ring < LAYERS; ring++) {
-      if (occluded) { grid[ring][s] = -1; continue; }
       const rPix = BLOOM.RINGS[ring] * scale;
       let hit = 0, c = 0;
       for (let da = -0.3; da <= 0.3; da += 0.15) {
@@ -203,24 +186,35 @@ export function decodeBloomData(
   const mask = inkMask(data, W, H);
   const circle = fitCircle(mask);
   if (!circle || circle.R < 10) return { ok: false, eccOk: false, payload: -1, confidence: 0, circle: null, originAngle: 0 };
-  const gap = findOriginGap(mask, circle);
-  let bestPay = -1, bestAgree = -1, bestOrigin = gap;
-  for (let off = -3; off <= 3; off++) {
-    const origin = gap + off * 0.01;
-    const { payload, symbols } = decodeGrid(readGrid(mask, circle, origin));
-    if (payload < 0 || payload > 0xffff) continue;
-    const re = encodeSymbolsRef(payload);
-    let agree = 0;
-    for (let i = 0; i < SYMBOL_COUNT; i++) if (re[i] === symbols[i]) agree++;
-    if (agree > bestAgree) { bestAgree = agree; bestPay = payload; bestOrigin = origin; }
+  const dotOrigin = findOriginDot(mask, circle);
+  if (dotOrigin === null) return { ok: false, eccOk: false, payload: -1, confidence: 0, circle, originAngle: 0 };
+  // Without a solid registration circle the fitted centre/scale carry a little error,
+  // so search a small origin × scale window and keep the most self-consistent decode
+  // (verify-by-synthesis through the codec) — this absorbs the residual geometry error.
+  let bestPay = -1, bestAgree = -1, bestOrigin = dotOrigin, bestRs = 1;
+  for (const rs of [0.96, 0.98, 1.0, 1.02, 1.04]) {
+    const c2 = { cx: circle.cx, cy: circle.cy, R: circle.R * rs };
+    for (let off = -6; off <= 6; off++) {
+      const origin = dotOrigin + off * 0.012;
+      const { payload, symbols } = decodeGrid(readGrid(mask, c2, origin));
+      if (payload < 0 || payload > 0xffff) continue;
+      const re = encodeSymbolsRef(payload);
+      let agree = 0;
+      for (let i = 0; i < SYMBOL_COUNT; i++) if (re[i] === symbols[i]) agree++;
+      if (agree > bestAgree) { bestAgree = agree; bestPay = payload; bestOrigin = origin; bestRs = rs; }
+      if (agree === SYMBOL_COUNT) break;
+    }
+    if (bestAgree === SYMBOL_COUNT) break;
   }
   const confidence = bestAgree < 0 ? 0 : bestAgree / SYMBOL_COUNT;
+  // Return the geometry that actually decoded best, so the centre-shape check samples
+  // the same frame the data was read from.
   return {
     ok: false,
     eccOk: confidence >= 0.92,
     payload: bestPay,
     confidence,
-    circle,
+    circle: { cx: circle.cx, cy: circle.cy, R: circle.R * bestRs },
     originAngle: bestOrigin,
   };
 }
@@ -233,7 +227,7 @@ export function decodeBloomData(
 export function extractCentre(mask: Mask, circle: Circle, origin: number, SZ: number): Uint8Array {
   const { m, W, H } = mask;
   const { cx, cy, R } = circle;
-  const scale = R / BLOOM.REG_R; // px per canvas unit
+  const scale = R / BLOOM.REG_RING; // px per canvas unit
   const out = new Uint8Array(SZ * SZ);
   const cos = Math.cos(origin), sin = Math.sin(origin);
   for (let v = 0; v < SZ; v++) {
@@ -252,9 +246,15 @@ export function extractCentre(mask: Mask, circle: Circle, origin: number, SZ: nu
   return out;
 }
 
-// Recommended acceptance threshold for the centre shape check: legitimate captures
-// measured ≥0.52, mismatched/forged centres ≤0.37, so 0.45 separates with margin.
-export const CENTRE_IOU_MIN = 0.45;
+// The centre shape check compares SILHOUETTES, so it must capture the whole wire —
+// including bright charge areas a 150 threshold misses, and across renderers that draw
+// the flower's gradients/blend differently. A lenient threshold (anything clearly
+// darker than the white field) makes the captured + reference masks robustly agree.
+export const CENTRE_INK_THRESH = 220;
+// Acceptance threshold for the centre check. With the silhouette threshold, legitimate
+// captures measured ≥0.82 and mismatched/forged centres ≤0.56, so 0.65 separates them
+// with margin on both sides (and headroom for renderer/camera variance).
+export const CENTRE_IOU_MIN = 0.65;
 
 /** IoU between two equal-size binary patches (the centre shape check). */
 export function centreIoU(a: Uint8Array, b: Uint8Array): number {

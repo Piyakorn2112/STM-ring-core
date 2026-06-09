@@ -29,13 +29,13 @@ import { CX, CY, exportThumbnailSVG, makeHover, PALETTE, VIEW_W } from "./stmRin
 export const BLOOM = {
   CAN: 300, // square canvas (in the flower's own units)
   C: 150, // centre (CAN/2)
-  // 5 concentric data rings hugging the bloom (outer edge ~R72) and filling the
-  // annulus out to the registration circle — the multilayered, App-Clip-style field.
-  RINGS: [80, 92, 104, 116, 128] as const,
+  // 4 concentric data rings hugging the bloom (outer edge ~R72). The outermost ring
+  // was dropped so the data field sits clear of the registration circle.
+  RINGS: [80, 94, 108, 122] as const,
   N_SLOTS: 22, // angular slots/ring (~16° each — stays distinct at distance)
-  REG_R: 140, // outer registration-circle radius
-  GAP: 0.16, // half-angle (rad) of the origin gap
-  TICK_ANG: -0.34, // winding-reference tick angle
+  REG_RING: 122, // the OUTERMOST data ring doubles as the registration circle (fitted)
+  DOT_POS: 134, // radius of the lone rotation dot (just outside the data field)
+  TICK_ANG: -0.34, // rotation-dot angle = the origin reference
   SLOT_FILL: 0.66, // arc fraction a dash fills (clear gaps → distinct far away)
   CENTRE_R: 75, // radius of the centre region used for shape verification (< ring 0)
 };
@@ -46,8 +46,8 @@ export const FRAME_BITS = SYMBOL_COUNT * 3;
 export const MAX_PAYLOAD = 2 ** PAYLOAD_BITS - 1;
 export const FOLDS = [3, 4, 5, 6] as const; // allowed bloom symmetry orders
 
-const REG_W = 2.7;
-const DOT_W = 4.2;
+const DOT_W = 6.2; // data-dash stroke weight (thick → reads at distance / low-res)
+const TICK_R = DOT_W * 0.85; // rotation dot — a little thicker than the data lines
 const f2 = (v: number) => v.toFixed(2);
 
 // Which frame bit a (ring, slot) cell carries. The +ring·7 offset places every frame
@@ -136,11 +136,11 @@ export function encodeBloomSVG(payload: number, opts: BloomOpts = {}): string {
     .replace(/<\/svg>\s*$/, "");
   let body = `<g transform="translate(${f2(BLOOM.C - CX)},${f2(BLOOM.C - CY)})">${flower}</g>`;
 
-  // Registration circle (origin gap at angle 0) + asymmetric winding tick.
-  body += arc(BLOOM.REG_R, BLOOM.GAP, 2 * Math.PI - BLOOM.GAP, REG_W, ink);
-  const tx = BLOOM.C + BLOOM.REG_R * Math.cos(BLOOM.TICK_ANG);
-  const ty = BLOOM.C + BLOOM.REG_R * Math.sin(BLOOM.TICK_ANG);
-  body += `<circle cx="${f2(tx)}" cy="${f2(ty)}" r="${f2(DOT_W * 0.62)}" fill="${ink}"/>`;
+  // Lone rotation dot, just outside the data field — the origin reference. (No outer
+  // registration circle: the concentric data rings are themselves the fitted frame.)
+  const tx = BLOOM.C + BLOOM.DOT_POS * Math.cos(BLOOM.TICK_ANG);
+  const ty = BLOOM.C + BLOOM.DOT_POS * Math.sin(BLOOM.TICK_ANG);
+  body += `<circle cx="${f2(tx)}" cy="${f2(ty)}" r="${f2(TICK_R)}" fill="${ink}"/>`;
 
   // Data: concentric dashes across all layers. Consecutive on-slots in a ring MERGE
   // into one flowing arc (the App-Clip look) while isolated on-slots stay short — both

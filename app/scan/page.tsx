@@ -24,6 +24,7 @@ import {
 } from "../components/bloomCodeCore";
 import {
   centreIoU,
+  CENTRE_INK_THRESH,
   CENTRE_IOU_MIN,
   decodeBloomData,
   extractCentre,
@@ -57,8 +58,8 @@ function pixelsFrom(src: CanvasImageSource, w: number, h: number): Uint8ClampedA
   return ctx.getImageData(0, 0, DECODE_PX, DECODE_PX).data;
 }
 
-// Rasterise an SVG string to a binary mask (for the centre reference render).
-function svgToMask(svg: string, sz: number): Promise<Uint8Array> {
+// Rasterise an SVG string to a binary silhouette mask (for the centre reference).
+function svgToMask(svg: string, sz: number, thresh: number): Promise<Uint8Array> {
   return new Promise((resolve) => {
     const im = new Image();
     im.onload = () => {
@@ -71,7 +72,7 @@ function svgToMask(svg: string, sz: number): Promise<Uint8Array> {
       ctx.drawImage(im, 0, 0, sz, sz);
       const d = ctx.getImageData(0, 0, sz, sz).data;
       const m = new Uint8Array(sz * sz);
-      for (let i = 0; i < sz * sz; i++) m[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 < 150 ? 1 : 0;
+      for (let i = 0; i < sz * sz; i++) m[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 < thresh ? 1 : 0;
       resolve(m);
     };
     im.onerror = () => resolve(new Uint8Array(sz * sz));
@@ -106,9 +107,10 @@ export default function ScanPage() {
       setStatus("No code found");
       return;
     }
-    const mask = inkMask(data, DECODE_PX, DECODE_PX);
+    // Silhouette masks (lenient threshold) so the centre check is renderer-robust.
+    const mask = inkMask(data, DECODE_PX, DECODE_PX, CENTRE_INK_THRESH);
     const cap = extractCentre(mask, scan.circle, scan.originAngle, CENTRE_PX);
-    const ref = await svgToMask(bloomCentreSVG(scan.payload, CENTRE_PX, true), CENTRE_PX);
+    const ref = await svgToMask(bloomCentreSVG(scan.payload, CENTRE_PX, true), CENTRE_PX, CENTRE_INK_THRESH);
     const iou = centreIoU(cap, ref);
     const verified = scan.eccOk && iou >= CENTRE_IOU_MIN;
     setReport({ payload: scan.payload, confidence: scan.confidence, iou, verified, fold: bloomSeed(scan.payload).fold });

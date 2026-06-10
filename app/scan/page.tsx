@@ -26,6 +26,7 @@ import {
   centreIoU,
   CENTRE_INK_THRESH,
   CENTRE_IOU_MIN,
+  closeMask,
   decodeBloomData,
   extractCentre,
   inkMask,
@@ -107,10 +108,12 @@ export default function ScanPage() {
       setStatus("No code found");
       return;
     }
-    // Silhouette masks (lenient threshold) so the centre check is renderer-robust.
+    // Silhouette masks (lenient threshold) + morphological close so the centre check
+    // is robust to charge-holes, sub-pixel drift, and renderer differences.
     const mask = inkMask(data, DECODE_PX, DECODE_PX, CENTRE_INK_THRESH);
-    const cap = extractCentre(mask, scan.circle, scan.originAngle, CENTRE_PX);
-    const ref = await svgToMask(bloomCentreSVG(scan.payload, CENTRE_PX, true), CENTRE_PX, CENTRE_INK_THRESH);
+    const cap = closeMask(extractCentre(mask, scan.circle, scan.originAngle, CENTRE_PX), CENTRE_PX, 2);
+    const refRaw = await svgToMask(bloomCentreSVG(scan.payload, CENTRE_PX, true), CENTRE_PX, CENTRE_INK_THRESH);
+    const ref = closeMask(refRaw, CENTRE_PX, 2);
     const iou = centreIoU(cap, ref);
     const verified = scan.eccOk && iou >= CENTRE_IOU_MIN;
     setReport({ payload: scan.payload, confidence: scan.confidence, iou, verified, fold: bloomSeed(scan.payload).fold });

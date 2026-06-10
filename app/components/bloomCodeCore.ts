@@ -33,11 +33,11 @@ export const BLOOM = {
   // was dropped so the data field sits clear of the registration circle.
   RINGS: [80, 94, 108, 122] as const,
   N_SLOTS: 22, // angular slots/ring (~16° each — stays distinct at distance)
-  REG_RING: 122, // the OUTERMOST data ring doubles as the registration circle (fitted)
-  DOT_POS: 134, // radius of the lone rotation dot (just outside the data field)
-  TICK_ANG: -0.34, // rotation-dot angle = the origin reference
+  REG_R: 132, // continuous registration circle (same weight as the data dashes)
+  DOT_POS: 143, // lone rotation dot, just OUTSIDE the circle (the origin reference)
+  TICK_ANG: -0.3, // rotation-dot angle = the origin reference
   SLOT_FILL: 0.66, // arc fraction a dash fills (clear gaps → distinct far away)
-  CENTRE_R: 75, // radius of the centre region used for shape verification (< ring 0)
+  CENTRE_R: 73, // radius of the centre region for shape verification (clears ring 0 @80)
 };
 export const LAYERS = BLOOM.RINGS.length;
 export const SLOTS_PER = BLOOM.N_SLOTS - 1; // slot 0 reserved (origin gap zone)
@@ -136,8 +136,10 @@ export function encodeBloomSVG(payload: number, opts: BloomOpts = {}): string {
     .replace(/<\/svg>\s*$/, "");
   let body = `<g transform="translate(${f2(BLOOM.C - CX)},${f2(BLOOM.C - CY)})">${flower}</g>`;
 
-  // Lone rotation dot, just outside the data field — the origin reference. (No outer
-  // registration circle: the concentric data rings are themselves the fitted frame.)
+  // Continuous registration circle (same weight as the data dashes — reads as part of
+  // the field, not a separate heavy ring) + a lone rotation dot just outside it. The
+  // circle gives a rock-solid centre/scale fit; the dot gives the origin angle.
+  body += `<circle cx="${f2(BLOOM.C)}" cy="${f2(BLOOM.C)}" r="${f2(BLOOM.REG_R)}" fill="none" stroke="${ink}" stroke-width="${f2(DOT_W)}"/>`;
   const tx = BLOOM.C + BLOOM.DOT_POS * Math.cos(BLOOM.TICK_ANG);
   const ty = BLOOM.C + BLOOM.DOT_POS * Math.sin(BLOOM.TICK_ANG);
   body += `<circle cx="${f2(tx)}" cy="${f2(ty)}" r="${f2(TICK_R)}" fill="${ink}"/>`;

@@ -43,76 +43,83 @@ export function inkMask(data: Uint8ClampedArray | Uint8Array, W: number, H: numb
 // ring (skipping the sparse rotation dot beyond it), and a Kåsa least-squares fit —
 // with one outlier-rejection refit so the dot can't pull it — pins centre + radius.
 export function fitCircle({ m, W, H }: Mask): Circle | null {
-  // Collect ink points and a bbox-centre seed (robust to lopsided data; the dot only
-  // nudges one axis a little).
-  const px: number[] = [], py: number[] = [];
   let minX = 1e9, minY = 1e9, maxX = -1, maxY = -1;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       if (!m[y * W + x]) continue;
-      px.push(x); py.push(y);
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     }
   }
-  if (px.length < 40) return null;
-  const bbx = (minX + maxX) / 2, bby = (minY + maxY) / 2;
-  let cmx = 0, cmy = 0;
-  for (let i = 0; i < px.length; i++) { cmx += px[i]; cmy += py[i]; }
-  cmx /= px.length; cmy /= px.length;
+  if (maxX < 0) return null;
+  let cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
   const maxR = Math.max(maxX - minX, maxY - minY) / 2;
+
+  // Seed R from a radial histogram: the registration circle is a strong outermost peak,
+  // while the lone dot just beyond it is too sparse to register — so this picks the
+  // circle, NOT the dot (whose extra reach would otherwise inflate a bbox estimate and
+  // pull the fit outward). Bins of 2px.
   const BIN = 2;
-  const nb = Math.ceil((maxR * 1.15) / BIN) + 1;
-
-  // Centre search: the true centre snaps the 4 concentric rings into sharp radial
-  // peaks, so the radius histogram's "energy" (Σ count²) is maximised there. Search a
-  // wide window around BOTH the bbox and centroid seeds (lopsided data biases each
-  // differently), coarse then fine.
+  const nb = Math.ceil((maxR * 1.1) / BIN) + 1;
   const hist = new Int32Array(nb);
-  const score = (cx: number, cy: number): number => {
-    hist.fill(0);
-    for (let i = 0; i < px.length; i++) {
-      const r = Math.hypot(px[i] - cx, py[i] - cy);
-      hist[Math.min(nb - 1, Math.floor(r / BIN))]++;
-    }
-    let s = 0;
-    for (let b = 0; b < nb; b++) s += hist[b] * hist[b];
-    return s;
-  };
-  let bestX = bbx, bestY = bby, bestS = -1;
-  for (const [sx, sy] of [[bbx, bby], [cmx, cmy]]) {
-    for (let dy = -20; dy <= 20; dy += 2) {
-      for (let dx = -20; dx <= 20; dx += 2) {
-        const s = score(sx + dx, sy + dy);
-        if (s > bestS) { bestS = s; bestX = sx + dx; bestY = sy + dy; }
-      }
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (!m[y * W + x]) continue;
+      hist[Math.min(nb - 1, Math.floor(Math.hypot(x - cx, y - cy) / BIN))]++;
     }
   }
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      const s = score(bestX + dx, bestY + dy);
-      if (s > bestS) { bestS = s; bestX += dx; bestY += dy; }
-    }
-  }
-
-  // Outer data ring = outermost substantial histogram peak (skips the sparse dot).
-  score(bestX, bestY);
   let peak = 0;
   for (let b = 0; b < nb; b++) if (hist[b] > peak) peak = hist[b];
   let R = maxR;
   for (let b = nb - 1; b >= 0; b--) {
-    if (hist[b] >= Math.max(12, peak * 0.35)) { R = (b + 0.5) * BIN; break; }
+    if (hist[b] >= Math.max(20, peak * 0.4)) { R = (b + 0.5) * BIN; break; }
   }
-  return { cx: bestX, cy: bestY, R };
+
+  // Kåsa fit on the registration-circle band, tightening each pass. The band around the
+  // histogram-seeded R excludes both the dot (just outside) and the inner data rings.
+  for (const band of [0.06, 0.04, 0.03]) {
+    const lo = ((1 - band) * R) ** 2, hi = ((1 + band) * R) ** 2;
+    let n = 0, Sx = 0, Sy = 0, Sxx = 0, Syy = 0, Sxy = 0, Sxz = 0, Syz = 0, Sz = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        if (!m[y * W + x]) continue;
+        const dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy;
+        if (d2 < lo || d2 > hi) continue;
+        const z = x * x + y * y;
+        n++; Sx += x; Sy += y; Sxx += x * x; Syy += y * y; Sxy += x * y;
+        Sxz += x * z; Syz += y * z; Sz += z;
+      }
+    }
+    if (n < 16) break;
+    const sol = solve3([[Sxx, Sxy, Sx], [Sxy, Syy, Sy], [Sx, Sy, n]], [Sxz, Syz, Sz]);
+    if (!sol) break;
+    const a = sol[0] / 2, b = sol[1] / 2;
+    const rr = sol[2] + a * a + b * b;
+    if (rr <= 0) break;
+    cx = a; cy = b; R = Math.sqrt(rr);
+  }
+  return { cx, cy, R };
+}
+
+// Tiny 3×3 solver (Cramer's rule) for the circle-fit normal equations.
+function solve3(A: number[][], B: number[]): [number, number, number] | null {
+  const det = (M: number[][]) =>
+    M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) -
+    M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
+    M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+  const d = det(A);
+  if (Math.abs(d) < 1e-9) return null;
+  const col = (i: number) => A.map((row, r) => row.map((v, c) => (c === i ? B[r] : v)));
+  return [det(col(0)) / d, det(col(1)) / d, det(col(2)) / d];
 }
 
 // (3) Origin reference = the lone rotation dot, the only ink sitting OUTSIDE the outer
 // data ring. Its angle, minus the known dot offset, gives the origin. Returns null if
 // no dot is found (so the caller can bail rather than misread).
 export function findOriginDot({ m, W, H }: Mask, { cx, cy, R }: Circle): number | null {
-  // R is the outer-ring radius; the dot is at DOT_POS/REG_RING × R, comfortably beyond.
+  // R is the registration-circle radius; the dot sits just beyond it.
   const beyond = (R * 1.06) ** 2;
   let sx = 0, sy = 0, n = 0;
   for (let y = 0; y < H; y++) {
@@ -129,11 +136,11 @@ export function findOriginDot({ m, W, H }: Mask, { cx, cy, R }: Circle): number 
 }
 
 // (4) Sample the 4 data rings into a grid at the given origin. `R` is the fitted
-// outer-ring radius, so the polar scale is R / REG_RING.
+// registration-circle radius, so the polar scale is R / REG_R.
 function readGrid(mask: Mask, circle: Circle, origin: number): number[][] {
   const { m, W, H } = mask;
   const { cx, cy, R } = circle;
-  const scale = R / BLOOM.REG_RING;
+  const scale = R / BLOOM.REG_R;
   const grid: number[][] = Array.from({ length: LAYERS }, () => new Array(BLOOM.N_SLOTS).fill(0));
   for (let s = 1; s < BLOOM.N_SLOTS; s++) {
     const th = origin + (s / BLOOM.N_SLOTS) * 2 * Math.PI;
@@ -188,33 +195,27 @@ export function decodeBloomData(
   if (!circle || circle.R < 10) return { ok: false, eccOk: false, payload: -1, confidence: 0, circle: null, originAngle: 0 };
   const dotOrigin = findOriginDot(mask, circle);
   if (dotOrigin === null) return { ok: false, eccOk: false, payload: -1, confidence: 0, circle, originAngle: 0 };
-  // Without a solid registration circle the fitted centre/scale carry a little error,
-  // so search a small origin × scale window and keep the most self-consistent decode
-  // (verify-by-synthesis through the codec) — this absorbs the residual geometry error.
-  let bestPay = -1, bestAgree = -1, bestOrigin = dotOrigin, bestRs = 1;
-  for (const rs of [0.96, 0.98, 1.0, 1.02, 1.04]) {
-    const c2 = { cx: circle.cx, cy: circle.cy, R: circle.R * rs };
-    for (let off = -6; off <= 6; off++) {
-      const origin = dotOrigin + off * 0.012;
-      const { payload, symbols } = decodeGrid(readGrid(mask, c2, origin));
-      if (payload < 0 || payload > 0xffff) continue;
-      const re = encodeSymbolsRef(payload);
-      let agree = 0;
-      for (let i = 0; i < SYMBOL_COUNT; i++) if (re[i] === symbols[i]) agree++;
-      if (agree > bestAgree) { bestAgree = agree; bestPay = payload; bestOrigin = origin; bestRs = rs; }
-      if (agree === SYMBOL_COUNT) break;
-    }
-    if (bestAgree === SYMBOL_COUNT) break;
+  // The continuous registration circle pins centre + scale accurately, so the correct
+  // read is at the detected origin ± a hair. Only a TIGHT origin window is searched —
+  // a wide search would let a misaligned read hit a spurious-but-consistent codeword
+  // and game the self-consistency check. Ties prefer the offset nearest 0.
+  let bestPay = -1, bestAgree = -1, bestOrigin = dotOrigin;
+  for (let off = -2; off <= 2; off++) {
+    const origin = dotOrigin + off * 0.01;
+    const { payload, symbols } = decodeGrid(readGrid(mask, circle, origin));
+    if (payload < 0 || payload > 0xffff) continue;
+    const re = encodeSymbolsRef(payload);
+    let agree = 0;
+    for (let i = 0; i < SYMBOL_COUNT; i++) if (re[i] === symbols[i]) agree++;
+    if (agree > bestAgree) { bestAgree = agree; bestPay = payload; bestOrigin = origin; }
   }
   const confidence = bestAgree < 0 ? 0 : bestAgree / SYMBOL_COUNT;
-  // Return the geometry that actually decoded best, so the centre-shape check samples
-  // the same frame the data was read from.
   return {
     ok: false,
     eccOk: confidence >= 0.92,
     payload: bestPay,
     confidence,
-    circle: { cx: circle.cx, cy: circle.cy, R: circle.R * bestRs },
+    circle,
     originAngle: bestOrigin,
   };
 }
@@ -227,7 +228,7 @@ export function decodeBloomData(
 export function extractCentre(mask: Mask, circle: Circle, origin: number, SZ: number): Uint8Array {
   const { m, W, H } = mask;
   const { cx, cy, R } = circle;
-  const scale = R / BLOOM.REG_RING; // px per canvas unit
+  const scale = R / BLOOM.REG_R; // px per canvas unit
   const out = new Uint8Array(SZ * SZ);
   const cos = Math.cos(origin), sin = Math.sin(origin);
   for (let v = 0; v < SZ; v++) {
@@ -255,6 +256,34 @@ export const CENTRE_INK_THRESH = 220;
 // captures measured ≥0.82 and mismatched/forged centres ≤0.56, so 0.65 separates them
 // with margin on both sides (and headroom for renderer/camera variance).
 export const CENTRE_IOU_MIN = 0.65;
+
+// Morphological close (dilate then erode) by radius `r` on an SZ×SZ patch. Fills the
+// small holes the flower's bright charge punches in a thresholded silhouette (which a
+// browser canvas and a server rasteriser render slightly differently) and bridges
+// sub-pixel gaps — so the centre IoU compares stable filled shapes, not noisy edges.
+export function closeMask(src: Uint8Array, SZ: number, r: number): Uint8Array {
+  // dilate (grow the set: a cell is on if any neighbour within r is on)
+  const dil = new Uint8Array(SZ * SZ);
+  for (let y = 0; y < SZ; y++) for (let x = 0; x < SZ; x++) {
+    let on = 0;
+    for (let dy = -r; dy <= r && !on; dy++) for (let dx = -r; dx <= r; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < SZ && ny < SZ && src[ny * SZ + nx]) { on = 1; break; }
+    }
+    dil[y * SZ + x] = on;
+  }
+  // erode (shrink back: a cell stays on only if all neighbours within r are on)
+  const out = new Uint8Array(SZ * SZ);
+  for (let y = 0; y < SZ; y++) for (let x = 0; x < SZ; x++) {
+    let allOn = 1;
+    for (let dy = -r; dy <= r && allOn; dy++) for (let dx = -r; dx <= r; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= SZ || ny >= SZ || !dil[ny * SZ + nx]) { allOn = 0; break; }
+    }
+    out[y * SZ + x] = allOn;
+  }
+  return out;
+}
 
 /** IoU between two equal-size binary patches (the centre shape check). */
 export function centreIoU(a: Uint8Array, b: Uint8Array): number {
